@@ -5,7 +5,15 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "prisma skills sync || exit 0"
+    "postinstall": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:validate": "prisma validate",
+    "db:migrate:status": "prisma migrate status",
+    "api:dev": "npm run dev --workspace @app/api",
+    "api:build": "prisma generate && npm run build --workspace @app/api",
+    "api:start": "npm run start --workspace @app/api",
+    "api:typecheck": "npm run typecheck --workspace @app/api",
+    "prisma:skills:sync": "prisma skills sync || exit 0"
   },
   "keywords": [],
   "author": "",
@@ -25,5 +33,9 @@
   "overrides": {
     "deepmerge-ts": "8.0.2",
     "mysql2": "3.24.5"
-  }
+  },
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ]
 }

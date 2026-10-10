@@ -15,3 +15,8 @@ generated/
 
 package.json.backup
 package-lock.backup
+
+apps/api/dist/
+apps/api/src/generated/
+apps/api/.env
+.stage05.1-backup-*/
