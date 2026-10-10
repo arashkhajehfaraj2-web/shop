@@ -1,0 +1,17 @@
+node_modules/
+**/node_modules/
+
+.env
+.env.*
+!.env.example
+
+dist/
+**/dist/
+coverage/
+
+generated/
+*.log
+*.tsbuildinfo
+
+package.json.backup
+package-lock.backup

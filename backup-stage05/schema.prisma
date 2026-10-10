@@ -1,0 +1,1286 @@
+// Prisma ORM 7.10.0 schema for Database Design v1.6
+// PostgreSQL >= 15. This file maps all 64 physical tables across 18 schemas.
+// Authoritative migration-only constructs are documented at the end of this file.
+// UUIDs are supplied by the application (UUIDv7 where required); no UUID DB default.
+
+generator client {
+  provider        = "prisma-client"
+  output          = "../generated/prisma"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider     = "postgresql"
+  relationMode = "foreignKeys"
+  schemas      = ["reference", "eventing", "identity", "sellers", "catalog", "media", "content", "reviews", "affiliate", "inventory", "currency", "discounts", "cart", "orders", "payments", "notifications", "analytics", "audit"]
+}
+
+// -----------------------------------------------------------------------------
+// reference
+// -----------------------------------------------------------------------------
+
+model Province {
+  id     String @id @db.Uuid
+  code   String @unique(map: "provinces_code_key") @db.VarChar(10)
+  nameFa String @map("name_fa") @db.VarChar(100)
+  nameEn String @map("name_en") @db.VarChar(100)
+  cities City[]
+
+  @@map("provinces")
+  @@schema("reference")
+}
+
+model City {
+  id         String   @id @db.Uuid
+  provinceId String   @map("province_id") @db.Uuid
+  code       String   @unique(map: "cities_code_key") @db.VarChar(10)
+  nameFa     String   @map("name_fa") @db.VarChar(100)
+  nameEn     String   @map("name_en") @db.VarChar(100)
+  province   Province @relation(fields: [provinceId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([provinceId], map: "cities_province_id_idx")
+  @@map("cities")
+  @@schema("reference")
+}
+
+// -----------------------------------------------------------------------------
+// eventing
+// -----------------------------------------------------------------------------
+
+model OutboxEvent {
+  eventId          String            @id @map("event_id") @db.Uuid
+  eventType        String            @map("event_type") @db.VarChar(80)
+  aggregateType    String            @map("aggregate_type") @db.VarChar(40)
+  aggregateId      String            @map("aggregate_id") @db.Uuid
+  aggregateVersion BigInt            @map("aggregate_version") @db.BigInt
+  occurredAt       DateTime          @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  correlationId    String?           @map("correlation_id") @db.Uuid
+  causationId      String?           @map("causation_id") @db.Uuid
+  publisher        String            @db.VarChar(30)
+  schemaVersion    Int               @default(1) @map("schema_version")
+  payload          Json              @db.JsonB
+  dispatchedAt     DateTime?         @map("dispatched_at") @db.Timestamptz(6)
+  dispatchAttempts Int               @default(0) @map("dispatch_attempts")
+  lastError        String?           @map("last_error")
+  processedEvents  ProcessedEvent[]
+  deadLetterEvents DeadLetterEvent[]
+
+  @@unique([aggregateType, aggregateId, aggregateVersion], map: "outbox_aggregate_type_aggregate_id_aggregate_version_key")
+  @@index([aggregateId, aggregateVersion], map: "outbox_aggregate_id_aggregate_version_idx")
+  @@index([occurredAt], where: raw("dispatched_at IS NULL"), map: "outbox_pending_idx")
+  @@map("outbox")
+  @@schema("eventing")
+}
+
+model ProcessedEvent {
+  eventId     String      @map("event_id") @db.Uuid
+  consumer    String      @db.VarChar(60)
+  processedAt DateTime    @default(now()) @map("processed_at") @db.Timestamptz(6)
+  outboxEvent OutboxEvent @relation(fields: [eventId], references: [eventId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([eventId, consumer])
+  @@map("processed_events")
+  @@schema("eventing")
+}
+
+model DeadLetterEvent {
+  id          String      @id @db.Uuid
+  eventId     String      @map("event_id") @db.Uuid
+  consumer    String      @db.VarChar(60)
+  payload     Json        @db.JsonB
+  error       String      @db.Text
+  failedAt    DateTime    @default(now()) @map("failed_at") @db.Timestamptz(6)
+  resolvedAt  DateTime?   @map("resolved_at") @db.Timestamptz(6)
+  resolvedBy  String?     @map("resolved_by") @db.Uuid
+  outboxEvent OutboxEvent @relation(fields: [eventId], references: [eventId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([eventId, consumer], map: "dead_letter_events_event_id_consumer_key")
+  @@map("dead_letter_events")
+  @@schema("eventing")
+}
+
+// -----------------------------------------------------------------------------
+// identity
+// -----------------------------------------------------------------------------
+
+model User {
+  id              String    @id @db.Uuid
+  phone           String    @unique(map: "users_phone_key") @db.VarChar(20)
+  phoneVerifiedAt DateTime  @map("phone_verified_at") @db.Timestamptz(6)
+  email           String    @unique(map: "users_email_key") @db.Citext
+  emailVerifiedAt DateTime  @map("email_verified_at") @db.Timestamptz(6)
+  passwordHash    String?   @map("password_hash") @db.VarChar(255)
+  passwordSetAt   DateTime? @map("password_set_at") @db.Timestamptz(6)
+  displayName     String?   @map("display_name") @db.VarChar(100)
+  status          String    @default("active") @db.VarChar(12)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  orders               Order[]
+  carts                Cart[]
+  notifications        Notification[]
+  authLogs             AuthLog[]
+  favorites            Favorite[]
+  reviews              Review[]             @relation("ReviewAuthor")
+  moderatedReviews     Review[]             @relation("ReviewModerator")
+  reviewReplies        ReviewReply[]        @relation("ReviewReplyAdmin")
+  contentItems         ContentItem[]        @relation("ContentAuthor")
+  approvedTranslations ContentTranslation[] @relation("TranslationApprover")
+  contentRevisions     ContentRevision[]    @relation("RevisionAuthor")
+  productCreations     Product[]            @relation("ProductCreator")
+  productUpdates       Product[]            @relation("ProductUpdater")
+  categoryCreations    Category[]           @relation("CategoryCreator")
+  categoryUpdates      Category[]           @relation("CategoryUpdater")
+  brandCreations       Brand[]              @relation("BrandCreator")
+  brandUpdates         Brand[]              @relation("BrandUpdater")
+  stockLevelUpdates    StockLevel[]         @relation("StockLevelUpdater")
+  stockAdjustments     StockAdjustment[]
+  clicks               Click[]
+  discountCreations    Discount[]           @relation("DiscountCreator")
+  commissionRates      CommissionRate[]     @relation("CommissionRateCreator")
+  orderStatusEntries   OrderStatusHistory[] @relation("OrderStatusActor")
+  fulfillmentUpdates   SellerFulfillment[]  @relation("FulfillmentUpdater")
+  refundRequests       Refund[]             @relation("RefundRequester")
+  uploadedMedia        MediaAsset[]         @relation("MediaUploader")
+  userRoles            UserRole[]           @relation("UserRoleSubject")
+  grantedRoles         UserRole[]           @relation("UserRoleGrantor")
+
+  @@index([status], map: "users_status_idx")
+  @@map("users")
+  @@schema("identity")
+}
+
+model Role {
+  id              String           @id @db.Uuid
+  code            String           @unique(map: "roles_code_key") @db.VarChar(40)
+  name            String           @db.VarChar(100)
+  isSystem        Boolean          @default(false) @map("is_system")
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+  @@schema("identity")
+}
+
+model Permission {
+  id              String           @id @db.Uuid
+  code            String           @unique(map: "permissions_code_key") @db.VarChar(80)
+  description     String?          @db.Text
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+  @@schema("identity")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+  @@schema("identity")
+}
+
+model UserRole {
+  userId        String   @map("user_id") @db.Uuid
+  roleId        String   @map("role_id") @db.Uuid
+  grantedBy     String?  @map("granted_by") @db.Uuid
+  grantedAt     DateTime @default(now()) @map("granted_at") @db.Timestamptz(6)
+  user          User     @relation("UserRoleSubject", fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  role          Role     @relation(fields: [roleId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  grantedByUser User?    @relation("UserRoleGrantor", fields: [grantedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+  @@schema("identity")
+}
+
+model AuthLog {
+  id            BigInt   @id @default(autoincrement()) @db.BigInt
+  userId        String?  @map("user_id") @db.Uuid
+  eventType     String   @map("event_type") @db.VarChar(30)
+  ipHash        String?  @map("ip_hash") @db.VarChar(64)
+  userAgentHash String?  @map("user_agent_hash") @db.VarChar(64)
+  correlationId String?  @map("correlation_id") @db.Uuid
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  user          User?    @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([userId, occurredAt(sort: Desc)], map: "auth_log_user_id_occurred_at_idx")
+  @@map("auth_log")
+  @@schema("identity")
+}
+
+model Favorite {
+  userId    String   @map("user_id") @db.Uuid
+  productId String   @map("product_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([userId, productId])
+  @@map("favorites")
+  @@schema("identity")
+}
+
+// -----------------------------------------------------------------------------
+// sellers
+// -----------------------------------------------------------------------------
+
+model Seller {
+  id             String          @id @db.Uuid
+  name           String          @db.VarChar(200)
+  contactName    String?         @map("contact_name") @db.VarChar(100)
+  contactPhone   String?         @map("contact_phone") @db.VarChar(20)
+  contactEmail   String?         @map("contact_email") @db.VarChar(255)
+  status         String          @db.VarChar(10)
+  notes          String?         @db.Text
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  tahLonjiOffers TahLonjiOffer[]
+  orderSellers   OrderSeller[]
+
+  @@index([status], map: "sellers_status_idx")
+  @@map("sellers")
+  @@schema("sellers")
+}
+
+// -----------------------------------------------------------------------------
+// media
+// -----------------------------------------------------------------------------
+
+model MediaAsset {
+  id             String         @id @db.Uuid
+  entityType     String         @map("entity_type") @db.VarChar(30)
+  entityId       String?        @map("entity_id") @db.Uuid
+  kind           String         @db.VarChar(20)
+  storageKey     String         @unique(map: "media_assets_storage_key_key") @map("storage_key") @db.VarChar(300)
+  variants       Json           @default("{}") @db.JsonB
+  mime           String?        @db.VarChar(100)
+  width          Int?
+  height         Int?
+  sizeBytes      BigInt?        @map("size_bytes") @db.BigInt
+  checksum       String?        @db.VarChar(64)
+  altFa          String?        @map("alt_fa") @db.VarChar(300)
+  altEn          String?        @map("alt_en") @db.VarChar(300)
+  locale         String?        @db.VarChar(2)
+  uploadedBy     String?        @map("uploaded_by") @db.Uuid
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz(6)
+  uploadedByUser User?          @relation("MediaUploader", fields: [uploadedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  productImages  ProductImage[]
+
+  @@index([entityType, entityId], map: "media_assets_entity_type_entity_id_idx")
+  @@map("media_assets")
+  @@schema("media")
+}
+
+// -----------------------------------------------------------------------------
+// catalog
+// -----------------------------------------------------------------------------
+
+model Category {
+  id                 String                @id @db.Uuid
+  parentId           String?               @map("parent_id") @db.Uuid
+  status             String                @db.VarChar(10)
+  sortOrder          Int                   @default(0) @map("sort_order")
+  version            Int                   @default(1)
+  createdBy          String?               @map("created_by") @db.Uuid
+  updatedBy          String?               @map("updated_by") @db.Uuid
+  createdAt          DateTime              @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime              @updatedAt @map("updated_at") @db.Timestamptz(6)
+  parent             Category?             @relation("CategoryParent", fields: [parentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  children           Category[]            @relation("CategoryParent")
+  createdByUser      User?                 @relation("CategoryCreator", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  updatedByUser      User?                 @relation("CategoryUpdater", fields: [updatedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  translations       CategoryTranslation[]
+  products           Product[]
+  categoryAttributes CategoryAttribute[]
+
+  @@index([parentId], map: "categories_parent_id_idx")
+  @@index([status], map: "categories_status_idx")
+  @@map("categories")
+  @@schema("catalog")
+}
+
+model CategoryTranslation {
+  categoryId      String   @map("category_id") @db.Uuid
+  locale          String   @db.VarChar(2)
+  name            String   @db.VarChar(200)
+  slug            String   @db.VarChar(200)
+  metaTitle       String?  @map("meta_title") @db.VarChar(200)
+  metaDescription String?  @map("meta_description") @db.VarChar(500)
+  category        Category @relation(fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([categoryId, locale])
+  @@unique([locale, slug], map: "category_translations_locale_slug_key")
+  @@map("category_translations")
+  @@schema("catalog")
+}
+
+model AttributeDefinition {
+  id                 String                           @id @db.Uuid
+  key                String                           @unique(map: "attribute_definitions_key_key") @db.VarChar(60)
+  dataType           String                           @map("data_type") @db.VarChar(10)
+  unit               String?                          @db.VarChar(20)
+  isFilterable       Boolean                          @default(false) @map("is_filterable")
+  isComparable       Boolean                          @default(false) @map("is_comparable")
+  isVariantAxis      Boolean                          @default(false) @map("is_variant_axis")
+  status             String                           @db.VarChar(10)
+  createdAt          DateTime                         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  translations       AttributeDefinitionTranslation[]
+  terms              AttributeTerm[]
+  categoryAttributes CategoryAttribute[]
+
+  @@map("attribute_definitions")
+  @@schema("catalog")
+}
+
+model AttributeDefinitionTranslation {
+  attributeDefinitionId String              @map("attribute_definition_id") @db.Uuid
+  locale                String              @db.VarChar(2)
+  displayName           String              @map("display_name") @db.VarChar(100)
+  description           String?             @db.Text
+  attributeDefinition   AttributeDefinition @relation(fields: [attributeDefinitionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([attributeDefinitionId, locale])
+  @@map("attribute_definition_translations")
+  @@schema("catalog")
+}
+
+model AttributeTerm {
+  id                    String                     @id @db.Uuid
+  attributeDefinitionId String                     @map("attribute_definition_id") @db.Uuid
+  slug                  String                     @db.VarChar(60)
+  sortOrder             Int                        @default(0) @map("sort_order")
+  attributeDefinition   AttributeDefinition        @relation(fields: [attributeDefinitionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  translations          AttributeTermTranslation[]
+
+  @@unique([attributeDefinitionId, slug], map: "attribute_terms_attribute_definition_id_slug_key")
+  @@map("attribute_terms")
+  @@schema("catalog")
+}
+
+model AttributeTermTranslation {
+  attributeTermId String        @map("attribute_term_id") @db.Uuid
+  locale          String        @db.VarChar(2)
+  value           String        @db.VarChar(100)
+  attributeTerm   AttributeTerm @relation(fields: [attributeTermId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([attributeTermId, locale])
+  @@map("attribute_term_translations")
+  @@schema("catalog")
+}
+
+model CategoryAttribute {
+  categoryId            String              @map("category_id") @db.Uuid
+  attributeDefinitionId String              @map("attribute_definition_id") @db.Uuid
+  isRequired            Boolean             @default(false) @map("is_required")
+  filterPosition        Int?                @map("filter_position")
+  sortOrder             Int                 @default(0) @map("sort_order")
+  category              Category            @relation(fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  attributeDefinition   AttributeDefinition @relation(fields: [attributeDefinitionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([categoryId, attributeDefinitionId])
+  @@map("category_attributes")
+  @@schema("catalog")
+}
+
+model Brand {
+  id            String             @id @db.Uuid
+  status        String             @db.VarChar(10)
+  createdBy     String?            @map("created_by") @db.Uuid
+  updatedBy     String?            @map("updated_by") @db.Uuid
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdByUser User?              @relation("BrandCreator", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  updatedByUser User?              @relation("BrandUpdater", fields: [updatedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  translations  BrandTranslation[]
+  products      Product[]
+
+  @@index([status], map: "brands_status_idx")
+  @@map("brands")
+  @@schema("catalog")
+}
+
+model BrandTranslation {
+  brandId String @map("brand_id") @db.Uuid
+  locale  String @db.VarChar(2)
+  name    String @db.VarChar(200)
+  slug    String @db.VarChar(200)
+  brand   Brand  @relation(fields: [brandId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([brandId, locale])
+  @@unique([locale, slug], map: "brand_translations_locale_slug_key")
+  @@map("brand_translations")
+  @@schema("catalog")
+}
+
+model Product {
+  id              String               @id @db.Uuid
+  categoryId      String               @map("category_id") @db.Uuid
+  brandId         String?              @map("brand_id") @db.Uuid
+  status          String               @db.VarChar(10)
+  version         Int                  @default(1)
+  ratingAvg       Decimal              @default(0) @map("rating_avg") @db.Decimal(3, 2)
+  ratingCount     Int                  @default(0) @map("rating_count")
+  specValuesFa    Json                 @map("spec_values_fa") @db.JsonB
+  specValuesEn    Json?                @map("spec_values_en") @db.JsonB
+  createdBy       String?              @map("created_by") @db.Uuid
+  updatedBy       String?              @map("updated_by") @db.Uuid
+  createdAt       DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt       DateTime?            @map("deleted_at") @db.Timestamptz(6)
+  category        Category             @relation(fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  brand           Brand?               @relation(fields: [brandId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdByUser   User?                @relation("ProductCreator", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  updatedByUser   User?                @relation("ProductUpdater", fields: [updatedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  translations    ProductTranslation[]
+  variants        ProductVariant[]
+  tahLonjiOffers  TahLonjiOffer[]
+  affiliateOffers AffiliateOffer[]
+  images          ProductImage[]
+  favorites       Favorite[]
+  reviews         Review[]
+  contentItems    ContentItem[]
+  cartItems       CartItem[]           @relation("CartItemProductLineage")
+  orderLines      OrderLine[]          @relation("LineProductLineage")
+  clicks          Click[]              @relation("ClickProduct")
+
+  @@index([categoryId, status], where: raw("deleted_at IS NULL"), map: "products_category_id_status_idx")
+  @@map("products")
+  @@schema("catalog")
+}
+
+model ProductTranslation {
+  productId       String  @map("product_id") @db.Uuid
+  locale          String  @db.VarChar(2)
+  name            String  @db.VarChar(300)
+  slug            String  @db.VarChar(300)
+  metaTitle       String? @map("meta_title") @db.VarChar(200)
+  metaDescription String? @map("meta_description") @db.VarChar(500)
+  product         Product @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@id([productId, locale])
+  @@unique([locale, slug], map: "product_translations_locale_slug_key")
+  @@map("product_translations")
+  // GIN/trigram index on the physical name column is migration-managed.
+  @@schema("catalog")
+}
+
+model ProductVariant {
+  id              String           @id @db.Uuid
+  productId       String           @map("product_id") @db.Uuid
+  axisValues      Json             @map("axis_values") @db.JsonB
+  sku             String?          @unique(map: "product_variants_sku_key") @db.VarChar(64)
+  specValuesFa    Json             @map("spec_values_fa") @db.JsonB
+  specValuesEn    Json?            @map("spec_values_en") @db.JsonB
+  status          String           @db.VarChar(10)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  product         Product          @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  images          ProductImage[]   @relation("ImageVariantLineage")
+  affiliateOffers AffiliateOffer[] @relation("AffiliateOfferVariant")
+  cartItems       CartItem[]       @relation("CartItemVariantLineage")
+  orderLines      OrderLine[]      @relation("LineVariantLineage")
+  stockLevels     StockLevel[]     @relation("StockVariantLineage")
+  reviews         Review[]
+
+  @@unique([id, productId], map: "product_variants_id_product_id_key")
+  @@index([productId], map: "product_variants_product_id_idx")
+  @@map("product_variants")
+  // JSONB uniqueness on (product_id, axis_values) is migration-managed.
+  @@schema("catalog")
+}
+
+model TahLonjiOffer {
+  id          String       @id @db.Uuid
+  productId   String       @map("product_id") @db.Uuid
+  sellerId    String       @map("seller_id") @db.Uuid
+  priceIrr    Decimal      @map("price_irr") @db.Decimal(18, 2)
+  weightGrams Int?         @map("weight_grams")
+  status      String       @db.VarChar(10)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  seller      Seller       @relation(fields: [sellerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  cartItems   CartItem[]   @relation("CartItemOfferLineage")
+  orderLines  OrderLine[]  @relation("LineOfferLineage")
+  stockLevels StockLevel[] @relation("StockOfferLineage")
+
+  @@unique([productId, sellerId], map: "tah_lonji_offers_product_id_seller_id_key")
+  @@unique([id, productId, sellerId], map: "tah_lonji_offers_id_product_id_seller_id_key")
+  @@unique([id, productId], map: "tah_lonji_offers_id_product_id_key")
+  @@index([sellerId], map: "tah_lonji_offers_seller_id_idx")
+  @@map("tah_lonji_offers")
+  @@schema("catalog")
+}
+
+model ProductImage {
+  id           String          @id @db.Uuid
+  productId    String          @map("product_id") @db.Uuid
+  variantId    String?         @map("variant_id") @db.Uuid
+  mediaAssetId String          @map("media_asset_id") @db.Uuid
+  sortOrder    Int             @default(0) @map("sort_order")
+  isPrimary    Boolean         @default(false) @map("is_primary")
+  product      Product         @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  variant      ProductVariant? @relation("ImageVariantLineage", fields: [variantId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict)
+  mediaAsset   MediaAsset      @relation(fields: [mediaAssetId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([productId, mediaAssetId], map: "product_images_product_id_media_asset_id_key")
+  @@unique([productId], where: raw("is_primary"), map: "product_images_product_id_primary_key")
+  @@map("product_images")
+  @@schema("catalog")
+}
+
+// -----------------------------------------------------------------------------
+// content
+// -----------------------------------------------------------------------------
+
+model ContentItem {
+  id                String               @id @db.Uuid
+  type              String               @db.VarChar(24)
+  productId         String?              @map("product_id") @db.Uuid
+  relatedProductIds Json                 @default("[]") @map("related_product_ids") @db.JsonB
+  authorUserId      String?              @map("author_user_id") @db.Uuid
+  status            String               @db.VarChar(12)
+  publishedAt       DateTime?            @map("published_at") @db.Timestamptz(6)
+  version           Int                  @default(1)
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  product           Product?             @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  author            User?                @relation("ContentAuthor", fields: [authorUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  translations      ContentTranslation[]
+
+  @@unique([productId], where: raw("type = 'product_article'"), map: "content_items_product_id_article_key")
+  @@index([status], map: "content_items_status_idx")
+  @@index([type], map: "content_items_type_idx")
+  @@map("content_items")
+  @@schema("content")
+}
+
+model ContentTranslation {
+  contentId       String            @map("content_id") @db.Uuid
+  locale          String            @db.VarChar(2)
+  title           String            @db.VarChar(300)
+  slug            String            @db.VarChar(300)
+  body            String            @db.Text
+  summary         String?           @db.VarChar(500)
+  source          String            @default("human") @db.VarChar(8)
+  approvedBy      String?           @map("approved_by") @db.Uuid
+  approvedAt      DateTime?         @map("approved_at") @db.Timestamptz(6)
+  metaTitle       String?           @map("meta_title") @db.VarChar(200)
+  metaDescription String?           @map("meta_description") @db.VarChar(500)
+  content         ContentItem       @relation(fields: [contentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  approver        User?             @relation("TranslationApprover", fields: [approvedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  revisions       ContentRevision[]
+
+  @@id([contentId, locale])
+  @@unique([locale, slug], map: "content_translations_locale_slug_key")
+  @@map("content_translations")
+  @@schema("content")
+}
+
+model ContentRevision {
+  id          BigInt             @id @default(autoincrement()) @db.BigInt
+  contentId   String             @map("content_id") @db.Uuid
+  locale      String             @db.VarChar(2)
+  revisionNo  Int                @map("revision_no")
+  snapshot    Json               @db.JsonB
+  createdBy   String?            @map("created_by") @db.Uuid
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(6)
+  translation ContentTranslation @relation(fields: [contentId, locale], references: [contentId, locale], onDelete: Restrict, onUpdate: Restrict)
+  author      User?              @relation("RevisionAuthor", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([contentId, locale, revisionNo], map: "content_revisions_content_id_locale_revision_no_key")
+  @@map("content_revisions")
+  @@schema("content")
+}
+
+// -----------------------------------------------------------------------------
+// reviews
+// -----------------------------------------------------------------------------
+
+model Review {
+  id               String          @id @db.Uuid
+  productId        String          @map("product_id") @db.Uuid
+  variantId        String?         @map("variant_id") @db.Uuid
+  locale           String          @db.VarChar(2)
+  reviewerName     String          @map("reviewer_name") @db.VarChar(100)
+  userId           String?         @map("user_id") @db.Uuid
+  rating           Int             @db.SmallInt
+  body             String          @db.Text
+  moderationStatus String          @default("pending") @map("moderation_status") @db.VarChar(10)
+  ipHash           String?         @map("ip_hash") @db.VarChar(64)
+  submittedAt      DateTime        @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  moderatedBy      String?         @map("moderated_by") @db.Uuid
+  moderatedAt      DateTime?       @map("moderated_at") @db.Timestamptz(6)
+  moderationNote   String?         @map("moderation_note") @db.Text
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  product          Product         @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  variant          ProductVariant? @relation(fields: [variantId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user             User?           @relation("ReviewAuthor", fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  moderator        User?           @relation("ReviewModerator", fields: [moderatedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reply            ReviewReply?
+
+  @@index([productId, moderationStatus, submittedAt(sort: Desc)], map: "reviews_product_id_moderation_status_submitted_at_idx")
+  @@index([moderationStatus], map: "reviews_moderation_status_idx")
+  @@map("reviews")
+  @@schema("reviews")
+}
+
+model ReviewReply {
+  reviewId    String   @id @map("review_id") @db.Uuid
+  adminUserId String   @map("admin_user_id") @db.Uuid
+  body        String   @db.Text
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  review      Review   @relation(fields: [reviewId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  adminUser   User     @relation("ReviewReplyAdmin", fields: [adminUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@map("review_replies")
+  @@schema("reviews")
+}
+
+// -----------------------------------------------------------------------------
+// affiliate
+// -----------------------------------------------------------------------------
+
+model Provider {
+  id              String           @id @db.Uuid
+  code            String           @unique(map: "providers_code_key") @db.VarChar(30)
+  name            String           @db.VarChar(100)
+  status          String           @db.VarChar(10)
+  capabilities    Json             @default("{}") @db.JsonB
+  configRef       String?          @map("config_ref") @db.VarChar(100)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+  affiliateOffers AffiliateOffer[]
+  clicks          Click[]
+  syncRuns        SyncRun[]
+  providerReports ProviderReport[]
+
+  @@map("providers")
+  @@schema("affiliate")
+}
+
+model AffiliateOffer {
+  id                String          @id @db.Uuid
+  providerId        String          @map("provider_id") @db.Uuid
+  productId         String          @map("product_id") @db.Uuid
+  variantId         String?         @map("variant_id") @db.Uuid
+  externalProductId String          @map("external_product_id") @db.VarChar(100)
+  externalVariantId String?         @map("external_variant_id") @db.VarChar(100)
+  priceIrr          Decimal?        @map("price_irr") @db.Decimal(18, 2)
+  availabilityState String          @map("availability_state") @db.VarChar(12)
+  affiliateUrlData  Json            @map("affiliate_url_data") @db.JsonB
+  syncState         String          @map("sync_state") @db.VarChar(12)
+  lastSyncedAt      DateTime        @map("last_synced_at") @db.Timestamptz(6)
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  provider          Provider        @relation(fields: [providerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  product           Product         @relation(fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  variant           ProductVariant? @relation("AffiliateOfferVariant", fields: [variantId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict)
+  clicks            Click[]         @relation("AffiliateClickOfferLineage")
+
+  @@unique([id, providerId, productId], map: "affiliate_offers_id_provider_id_product_id_key")
+  @@index([productId], map: "affiliate_offers_product_id_idx")
+  @@map("affiliate_offers")
+  // External identity uses PostgreSQL UNIQUE NULLS NOT DISTINCT and is migration-managed.
+  @@schema("affiliate")
+}
+
+model Click {
+  id               BigInt         @id @default(autoincrement()) @db.BigInt
+  providerId       String         @map("provider_id") @db.Uuid
+  affiliateOfferId String         @map("affiliate_offer_id") @db.Uuid
+  productId        String         @map("product_id") @db.Uuid
+  occurredAt       DateTime       @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  visitorHash      String?        @map("visitor_hash") @db.VarChar(64)
+  referrerHost     String?        @map("referrer_host") @db.VarChar(200)
+  locale           String?        @db.VarChar(2)
+  userId           String?        @map("user_id") @db.Uuid
+  offer            AffiliateOffer @relation("AffiliateClickOfferLineage", fields: [affiliateOfferId, providerId, productId], references: [id, providerId, productId], onDelete: Restrict, onUpdate: Restrict)
+  provider         Provider       @relation(fields: [providerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  product          Product        @relation("ClickProduct", fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  user             User?          @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([productId, occurredAt], map: "clicks_product_id_occurred_at_idx")
+  @@index([providerId, occurredAt], map: "clicks_provider_id_occurred_at_idx")
+  @@index([affiliateOfferId, occurredAt], map: "clicks_affiliate_offer_id_occurred_at_idx")
+  @@map("clicks")
+  @@schema("affiliate")
+}
+
+model SyncRun {
+  id           String    @id @db.Uuid
+  providerId   String    @map("provider_id") @db.Uuid
+  startedAt    DateTime  @default(now()) @map("started_at") @db.Timestamptz(6)
+  finishedAt   DateTime? @map("finished_at") @db.Timestamptz(6)
+  status       String    @db.VarChar(10)
+  createdCount Int       @default(0) @map("created_count")
+  updatedCount Int       @default(0) @map("updated_count")
+  failedCount  Int       @default(0) @map("failed_count")
+  errorSummary String?   @map("error_summary") @db.Text
+  provider     Provider  @relation(fields: [providerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([providerId, startedAt(sort: Desc)], map: "sync_runs_provider_id_started_at_idx")
+  @@map("sync_runs")
+  @@schema("affiliate")
+}
+
+// -----------------------------------------------------------------------------
+// inventory
+// -----------------------------------------------------------------------------
+
+model StockLevel {
+  id               String            @id @db.Uuid
+  offerId          String            @map("offer_id") @db.Uuid
+  productId        String            @map("product_id") @db.Uuid
+  variantId        String?           @map("variant_id") @db.Uuid
+  quantityOnHand   Int               @map("quantity_on_hand")
+  quantityReserved Int               @default(0) @map("quantity_reserved")
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  updatedBy        String?           @map("updated_by") @db.Uuid
+  offer            TahLonjiOffer     @relation("StockOfferLineage", fields: [offerId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict)
+  variant          ProductVariant?   @relation("StockVariantLineage", fields: [variantId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict)
+  updatedByUser    User?             @relation("StockLevelUpdater", fields: [updatedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  reservations     Reservation[]
+  adjustments      StockAdjustment[]
+
+  @@index([offerId], map: "stock_levels_offer_id_idx")
+  @@map("stock_levels")
+  // UNIQUE NULLS NOT DISTINCT (offer_id, variant_id) is migration-managed.
+  @@schema("inventory")
+}
+
+model StockAdjustment {
+  id             String     @id @db.Uuid
+  stockLevelId   String     @map("stock_level_id") @db.Uuid
+  delta          Int
+  quantityBefore Int        @map("quantity_before")
+  quantityAfter  Int        @map("quantity_after")
+  reason         String?    @db.Text
+  adjustedBy     String?    @map("adjusted_by") @db.Uuid
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  stockLevel     StockLevel @relation(fields: [stockLevelId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  adjustedByUser User?      @relation(fields: [adjustedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([stockLevelId], map: "stock_adjustments_stock_level_id_idx")
+  @@map("stock_adjustments")
+  @@schema("inventory")
+}
+
+model Reservation {
+  id           String     @id @db.Uuid
+  stockLevelId String     @map("stock_level_id") @db.Uuid
+  orderId      String     @map("order_id") @db.Uuid
+  quantity     Int
+  status       String     @db.VarChar(10)
+  expiresAt    DateTime   @map("expires_at") @db.Timestamptz(6)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  resolvedAt   DateTime?  @map("resolved_at") @db.Timestamptz(6)
+  stockLevel   StockLevel @relation(fields: [stockLevelId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  order        Order      @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([status, expiresAt], map: "reservations_status_expires_at_idx")
+  @@index([orderId], map: "reservations_order_id_idx")
+  @@map("reservations")
+  @@schema("inventory")
+}
+
+// -----------------------------------------------------------------------------
+// currency
+// -----------------------------------------------------------------------------
+
+model ExchangeRate {
+  id        String    @id @db.Uuid
+  source    String    @db.VarChar(20)
+  base      String    @default("USDT") @db.VarChar(10)
+  quote     String    @default("IRR") @db.VarChar(10)
+  rate      Decimal   @db.Decimal(20, 8)
+  fetchedAt DateTime  @default(now()) @map("fetched_at") @db.Timestamptz(6)
+  orders    Order[]   @relation("OrderUsdtRate")
+  payments  Payment[] @relation("PaymentUsdtRate")
+
+  @@index([source, base, quote, fetchedAt(sort: Desc), id(sort: Desc)], map: "exchange_rates_source_base_quote_fetched_at_idx")
+  @@map("exchange_rates")
+  @@schema("currency")
+}
+
+// -----------------------------------------------------------------------------
+// discounts
+// -----------------------------------------------------------------------------
+
+model Discount {
+  id                String       @id @db.Uuid
+  type              String       @db.VarChar(30)
+  name              String       @db.VarChar(200)
+  valueType         String       @map("value_type") @db.VarChar(10)
+  value             Decimal      @db.Decimal(18, 2)
+  minOrderAmountIrr Decimal?     @map("min_order_amount_irr") @db.Decimal(18, 2)
+  startsAt          DateTime     @map("starts_at") @db.Timestamptz(6)
+  endsAt            DateTime?    @map("ends_at") @db.Timestamptz(6)
+  usageLimitTotal   Int?         @map("usage_limit_total")
+  usageLimitPerUser Int?         @map("usage_limit_per_user")
+  status            String       @db.VarChar(10)
+  createdBy         String?      @map("created_by") @db.Uuid
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdByUser     User?        @relation("DiscountCreator", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  coupons           Coupon[]     @relation("DiscountCoupons")
+  redemptions       Redemption[] @relation("DiscountRedemptions")
+
+  @@map("discounts")
+  @@schema("discounts")
+}
+
+model Coupon {
+  id          String       @id @db.Uuid
+  discountId  String       @map("discount_id") @db.Uuid
+  code        String       @unique(map: "coupons_code_key") @db.Citext
+  status      String       @db.VarChar(10)
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+  discount    Discount     @relation("DiscountCoupons", fields: [discountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  redemptions Redemption[] @relation("RedemptionCouponLineage")
+
+  @@unique([id, discountId], map: "coupons_id_discount_id_key")
+  @@map("coupons")
+  @@schema("discounts")
+}
+
+model Redemption {
+  id         String   @id @db.Uuid
+  discountId String   @map("discount_id") @db.Uuid
+  couponId   String?  @map("coupon_id") @db.Uuid
+  orderId    String   @map("order_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  amountIrr  Decimal  @map("amount_irr") @db.Decimal(18, 2)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  discount   Discount @relation("DiscountRedemptions", fields: [discountId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  coupon     Coupon?  @relation("RedemptionCouponLineage", fields: [couponId, discountId], references: [id, discountId], onDelete: Restrict, onUpdate: Restrict)
+  order      Order    @relation("RedemptionOrderUser", fields: [orderId, userId], references: [id, userId], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([orderId, discountId], map: "redemptions_order_id_discount_id_key")
+  @@index([discountId], map: "redemptions_discount_id_idx")
+  @@index([userId], map: "redemptions_user_id_idx")
+  @@map("redemptions")
+  @@schema("discounts")
+}
+
+// -----------------------------------------------------------------------------
+// cart
+// -----------------------------------------------------------------------------
+
+model Cart {
+  id          String     @id @db.Uuid
+  userId      String?    @map("user_id") @db.Uuid
+  anonToken   String?    @map("anon_token") @db.VarChar(64)
+  status      String     @db.VarChar(12)
+  convertedAt DateTime?  @map("converted_at") @db.Timestamptz(6)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user        User?      @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  items       CartItem[]
+
+  @@unique([userId], where: raw("status = 'active'"), map: "carts_user_id_active_key")
+  @@unique([anonToken], where: raw("status = 'active'"), map: "carts_anon_token_active_key")
+  @@map("carts")
+  @@schema("cart")
+}
+
+model CartItem {
+  id        String          @id @db.Uuid
+  cartId    String          @map("cart_id") @db.Uuid
+  offerId   String          @map("offer_id") @db.Uuid
+  productId String          @map("product_id") @db.Uuid
+  sellerId  String          @map("seller_id") @db.Uuid
+  variantId String?         @map("variant_id") @db.Uuid
+  quantity  Int
+  addedAt   DateTime        @default(now()) @map("added_at") @db.Timestamptz(6)
+  updatedAt DateTime        @updatedAt @map("updated_at") @db.Timestamptz(6)
+  cart      Cart            @relation(fields: [cartId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+  offer     TahLonjiOffer   @relation("CartItemOfferLineage", fields: [offerId, productId, sellerId], references: [id, productId, sellerId], onDelete: Restrict, onUpdate: Restrict)
+  variant   ProductVariant? @relation("CartItemVariantLineage", fields: [variantId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict)
+  product   Product         @relation("CartItemProductLineage", fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([cartId], map: "cart_items_cart_id_idx")
+  @@map("cart_items")
+  // UNIQUE NULLS NOT DISTINCT (cart_id, offer_id, variant_id) is migration-managed.
+  @@schema("cart")
+}
+
+// -----------------------------------------------------------------------------
+// orders
+// -----------------------------------------------------------------------------
+
+model Order {
+  id                String               @id @db.Uuid
+  orderNumber       String               @unique(map: "orders_order_number_key") @map("order_number") @db.VarChar(20)
+  userId            String               @map("user_id") @db.Uuid
+  status            String               @db.VarChar(12)
+  grossItemsIrr     Decimal              @map("gross_items_irr") @db.Decimal(18, 2)
+  lineDiscountIrr   Decimal              @map("line_discount_irr") @db.Decimal(18, 2)
+  orderDiscountIrr  Decimal              @map("order_discount_irr") @db.Decimal(18, 2)
+  shippingAmountIrr Decimal              @map("shipping_amount_irr") @db.Decimal(18, 2)
+  totalIrr          Decimal              @map("total_irr") @db.Decimal(18, 2)
+  paymentCurrency   String               @map("payment_currency") @db.VarChar(8)
+  usdtRateId        String?              @map("usdt_rate_id") @db.Uuid
+  totalUsdt         Decimal?             @map("total_usdt") @db.Decimal(20, 8)
+  shippingAddress   Json                 @map("shipping_address") @db.JsonB
+  paymentId         String?              @map("payment_id") @db.Uuid
+  placedAt          DateTime             @default(now()) @map("placed_at") @db.Timestamptz(6)
+  paidAt            DateTime?            @map("paid_at") @db.Timestamptz(6)
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(6)
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  usdtRate          ExchangeRate?        @relation("OrderUsdtRate", fields: [usdtRateId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  success           SucceededPayment?    @relation("OrderPaymentPointer", fields: [paymentId, id], references: [paymentId, orderId], onDelete: Restrict, onUpdate: Restrict)
+  successRecord     SucceededPayment?    @relation("SuccessOrderDirect")
+  payments          Payment[]
+  lines             OrderLine[]
+  orderSellers      OrderSeller[]
+  reservations      Reservation[]
+  shipment          Shipment?
+  statusHistory     OrderStatusHistory[]
+  redemptions       Redemption[]         @relation("RedemptionOrderUser")
+
+  @@unique([id, userId], map: "orders_id_user_id_key")
+  @@index([userId, placedAt(sort: Desc)], map: "orders_user_id_placed_at_idx")
+  @@index([status, placedAt(sort: Desc)], map: "orders_status_placed_at_idx")
+  @@map("orders")
+  @@schema("orders")
+}
+
+model OrderSeller {
+  orderId      String              @map("order_id") @db.Uuid
+  sellerId     String              @map("seller_id") @db.Uuid
+  order        Order               @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  seller       Seller              @relation(fields: [sellerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  lines        OrderLine[]         @relation("LineSellerMembership")
+  fulfillments SellerFulfillment[] @relation("FulfillmentSellerMembership")
+
+  @@id([orderId, sellerId])
+  @@map("order_sellers")
+  @@schema("orders")
+}
+
+model OrderLine {
+  id                    String          @id @db.Uuid
+  orderId               String          @map("order_id") @db.Uuid
+  lineNo                Int             @map("line_no")
+  productId             String          @map("product_id") @db.Uuid
+  offerId               String          @map("offer_id") @db.Uuid
+  sellerId              String          @map("seller_id") @db.Uuid
+  variantId             String?         @map("variant_id") @db.Uuid
+  quantity              Int
+  productSnapshot       Json            @map("product_snapshot") @db.JsonB
+  sellerSnapshot        Json            @map("seller_snapshot") @db.JsonB
+  unitPriceIrr          Decimal         @map("unit_price_irr") @db.Decimal(18, 2)
+  grossAmountIrr        Decimal         @map("gross_amount_irr") @db.Decimal(18, 2)
+  discountAllocationIrr Decimal         @map("discount_allocation_irr") @db.Decimal(18, 2)
+  lineTotalIrr          Decimal         @map("line_total_irr") @db.Decimal(18, 2)
+  commissionRatePct     Decimal         @map("commission_rate_pct") @db.Decimal(6, 3)
+  commissionAmountIrr   Decimal         @map("commission_amount_irr") @db.Decimal(18, 2)
+  createdAt             DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+  order                 Order           @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  orderSeller           OrderSeller     @relation("LineSellerMembership", fields: [orderId, sellerId], references: [orderId, sellerId], onDelete: Restrict, onUpdate: Restrict)
+  offer                 TahLonjiOffer   @relation("LineOfferLineage", fields: [offerId, productId, sellerId], references: [id, productId, sellerId], onDelete: Restrict, onUpdate: Restrict)
+  variant               ProductVariant? @relation("LineVariantLineage", fields: [variantId, productId], references: [id, productId], onDelete: Restrict, onUpdate: Restrict)
+  product               Product         @relation("LineProductLineage", fields: [productId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([orderId, lineNo], map: "order_lines_order_id_line_no_key")
+  @@index([orderId], map: "order_lines_order_id_idx")
+  @@index([offerId, createdAt], map: "order_lines_offer_id_created_at_idx")
+  @@map("order_lines")
+  @@schema("orders")
+}
+
+model SellerFulfillment {
+  id            String      @id @db.Uuid
+  orderId       String      @map("order_id") @db.Uuid
+  sellerId      String      @map("seller_id") @db.Uuid
+  status        String      @db.VarChar(16)
+  transferredAt DateTime?   @map("transferred_at") @db.Timestamptz(6)
+  readyAt       DateTime?   @map("ready_at") @db.Timestamptz(6)
+  adminNotes    String?     @map("admin_notes") @db.Text
+  updatedBy     String?     @map("updated_by") @db.Uuid
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+  orderSeller   OrderSeller @relation("FulfillmentSellerMembership", fields: [orderId, sellerId], references: [orderId, sellerId], onDelete: Restrict, onUpdate: Restrict)
+  updatedByUser User?       @relation("FulfillmentUpdater", fields: [updatedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([orderId, sellerId], map: "seller_fulfillments_order_id_seller_id_key")
+  @@index([orderId], map: "seller_fulfillments_order_id_idx")
+  @@map("seller_fulfillments")
+  @@schema("orders")
+}
+
+model Shipment {
+  id           String    @id @db.Uuid
+  orderId      String    @unique(map: "shipments_order_id_key") @map("order_id") @db.Uuid
+  carrier      String?   @db.VarChar(50)
+  trackingCode String?   @unique(map: "shipments_tracking_code_key") @map("tracking_code") @db.VarChar(100)
+  shippedAt    DateTime? @map("shipped_at") @db.Timestamptz(6)
+  deliveredAt  DateTime? @map("delivered_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  order        Order     @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@map("shipments")
+  @@schema("orders")
+}
+
+model OrderStatusHistory {
+  id            BigInt   @id @default(autoincrement()) @db.BigInt
+  orderId       String   @map("order_id") @db.Uuid
+  fromStatus    String?  @map("from_status") @db.VarChar(12)
+  toStatus      String   @map("to_status") @db.VarChar(12)
+  actorType     String   @map("actor_type") @db.VarChar(10)
+  actorUserId   String?  @map("actor_user_id") @db.Uuid
+  reason        String?  @db.Text
+  correlationId String?  @map("correlation_id") @db.Uuid
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  order         Order    @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actor         User?    @relation("OrderStatusActor", fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([orderId], map: "order_status_history_order_id_idx")
+  @@map("order_status_history")
+  @@schema("orders")
+}
+
+// -----------------------------------------------------------------------------
+// payments
+// -----------------------------------------------------------------------------
+
+model Payment {
+  id               String            @id @db.Uuid
+  orderId          String            @map("order_id") @db.Uuid
+  attemptNo        Int               @map("attempt_no") @db.SmallInt
+  method           String            @db.VarChar(14)
+  providerCode     String            @map("provider_code") @db.VarChar(30)
+  status           String            @db.VarChar(10)
+  amountIrr        Decimal           @map("amount_irr") @db.Decimal(18, 2)
+  amountUsdt       Decimal?          @map("amount_usdt") @db.Decimal(20, 8)
+  usdtRateId       String?           @map("usdt_rate_id") @db.Uuid
+  idempotencyKey   String            @unique(map: "payments_idempotency_key_key") @map("idempotency_key") @db.VarChar(64)
+  providerTxnRef   String?           @unique(map: "payments_provider_txn_ref_key") @map("provider_txn_ref") @db.VarChar(100)
+  initiatedAt      DateTime          @default(now()) @map("initiated_at") @db.Timestamptz(6)
+  verifiedAt       DateTime?         @map("verified_at") @db.Timestamptz(6)
+  failedAt         DateTime?         @map("failed_at") @db.Timestamptz(6)
+  failureReason    String?           @map("failure_reason") @db.Text
+  callbackMetadata Json?             @map("callback_metadata") @db.JsonB
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime          @updatedAt @map("updated_at") @db.Timestamptz(6)
+  order            Order             @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  usdtRate         ExchangeRate?     @relation("PaymentUsdtRate", fields: [usdtRateId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  successRecord    SucceededPayment? @relation("SuccessPaymentLineage")
+  refunds          Refund[]          @relation("RefundPaymentLineage")
+
+  @@unique([id, orderId], map: "payments_id_order_id_key")
+  @@unique([orderId, attemptNo], map: "payments_order_id_attempt_no_key")
+  @@unique([orderId], where: raw("status = 'succeeded'"), map: "payments_order_id_succeeded_key")
+  @@index([orderId, status], map: "payments_order_id_status_idx")
+  @@map("payments")
+  @@schema("payments")
+}
+
+model SucceededPayment {
+  paymentId     String   @id @map("payment_id") @db.Uuid
+  orderId       String   @unique(map: "succeeded_payments_order_id_key") @map("order_id") @db.Uuid
+  succeededAt   DateTime @map("succeeded_at") @db.Timestamptz(6)
+  payment       Payment  @relation("SuccessPaymentLineage", fields: [paymentId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict)
+  order         Order    @relation("SuccessOrderDirect", fields: [orderId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  pointerOrders Order[]  @relation("OrderPaymentPointer")
+
+  @@unique([paymentId, orderId], map: "succeeded_payments_payment_id_order_id_key")
+  @@map("succeeded_payments")
+  @@schema("payments")
+}
+
+model Refund {
+  id              String    @id @db.Uuid
+  paymentId       String    @map("payment_id") @db.Uuid
+  orderId         String    @map("order_id") @db.Uuid
+  amountIrr       Decimal?  @map("amount_irr") @db.Decimal(18, 2)
+  amountUsdt      Decimal?  @map("amount_usdt") @db.Decimal(20, 8)
+  status          String    @db.VarChar(10)
+  reason          String    @db.Text
+  requestedBy     String?   @map("requested_by") @db.Uuid
+  requestedAt     DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
+  executedAt      DateTime? @map("executed_at") @db.Timestamptz(6)
+  providerRef     String?   @map("provider_ref") @db.VarChar(100)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  payment         Payment   @relation("RefundPaymentLineage", fields: [paymentId, orderId], references: [id, orderId], onDelete: Restrict, onUpdate: Restrict)
+  requestedByUser User?     @relation("RefundRequester", fields: [requestedBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([paymentId], map: "refunds_payment_id_idx")
+  @@map("refunds")
+  @@schema("payments")
+}
+
+model CommissionRate {
+  id            String    @id @db.Uuid
+  ratePct       Decimal   @map("rate_pct") @db.Decimal(6, 3)
+  validFrom     DateTime  @map("valid_from") @db.Timestamptz(6)
+  validTo       DateTime? @map("valid_to") @db.Timestamptz(6)
+  note          String?   @db.Text
+  createdBy     String?   @map("created_by") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  createdByUser User?     @relation("CommissionRateCreator", fields: [createdBy], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@map("commission_rates")
+  // The single-current constant-expression partial unique index is migration-managed.
+  @@schema("payments")
+}
+
+// -----------------------------------------------------------------------------
+// notifications
+// -----------------------------------------------------------------------------
+
+model Template {
+  id        String   @id @db.Uuid
+  code      String   @db.VarChar(60)
+  channel   String   @db.VarChar(10)
+  locale    String   @db.VarChar(2)
+  subject   String?  @db.VarChar(300)
+  body      String   @db.Text
+  variables Json     @default("[]") @db.JsonB
+  status    String   @db.VarChar(10)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([code, channel, locale], map: "templates_code_channel_locale_key")
+  @@map("templates")
+  @@schema("notifications")
+}
+
+model Notification {
+  id            String    @id @db.Uuid
+  userId        String?   @map("user_id") @db.Uuid
+  recipient     String?   @db.VarChar(320)
+  channel       String    @db.VarChar(10)
+  eventType     String    @map("event_type") @db.VarChar(60)
+  payload       Json      @db.JsonB
+  status        String    @db.VarChar(10)
+  attempts      Int       @default(0)
+  sentAt        DateTime? @map("sent_at") @db.Timestamptz(6)
+  failureReason String?   @map("failure_reason") @db.Text
+  correlationId String?   @map("correlation_id") @db.Uuid
+  dedupeKey     String?   @unique(map: "notifications_dedupe_key_key") @map("dedupe_key") @db.VarChar(160)
+  outboxEventId String?   @map("outbox_event_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user          User?     @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@index([userId, createdAt(sort: Desc)], where: raw("channel = 'in_app'"), map: "notifications_user_id_created_at_idx")
+  @@index([status], map: "notifications_status_idx")
+  @@map("notifications")
+  @@schema("notifications")
+}
+
+// -----------------------------------------------------------------------------
+// analytics
+// -----------------------------------------------------------------------------
+
+model AnalyticsEvent {
+  id          BigInt   @id @default(autoincrement()) @db.BigInt
+  eventType   String   @map("event_type") @db.VarChar(40)
+  entityType  String?  @map("entity_type") @db.VarChar(30)
+  entityId    String?  @map("entity_id") @db.Uuid
+  occurredAt  DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  locale      String?  @db.VarChar(2)
+  visitorHash String?  @map("visitor_hash") @db.VarChar(64)
+  userId      String?  @map("user_id") @db.Uuid
+  metadata    Json?    @db.JsonB
+
+  @@index([eventType, occurredAt], map: "analytics_events_event_type_occurred_at_idx")
+  @@index([entityType, entityId, occurredAt], map: "analytics_events_entity_type_entity_id_occurred_at_idx")
+  @@map("events")
+  @@schema("analytics")
+}
+
+model ProductDaily {
+  date            DateTime @db.Date
+  productId       String   @map("product_id") @db.Uuid
+  views           Int      @default(0)
+  affiliateClicks Int      @default(0) @map("affiliate_clicks")
+  tlhUnitsSold    Int      @default(0) @map("tlh_units_sold")
+  tlhSalesIrr     Decimal  @default(0) @map("tlh_sales_irr") @db.Decimal(18, 2)
+
+  @@id([date, productId])
+  @@map("product_daily")
+  @@schema("analytics")
+}
+
+model ContentDaily {
+  date      DateTime @db.Date
+  contentId String   @map("content_id") @db.Uuid
+  views     Int      @default(0)
+
+  @@id([date, contentId])
+  @@map("content_daily")
+  @@schema("analytics")
+}
+
+model SiteDaily {
+  date      DateTime @db.Date
+  metricKey String   @map("metric_key") @db.VarChar(40)
+  value     Decimal  @default(0) @db.Decimal(18, 2)
+
+  @@id([date, metricKey])
+  @@map("site_daily")
+  @@schema("analytics")
+}
+
+model ProviderReport {
+  id          String   @id @db.Uuid
+  providerId  String   @map("provider_id") @db.Uuid
+  reportDate  DateTime @map("report_date") @db.Date
+  conversions Int?
+  revenue     Decimal? @db.Decimal(18, 2)
+  currency    String   @db.VarChar(10)
+  sourceNote  String?  @map("source_note") @db.Text
+  fetchedAt   DateTime @default(now()) @map("fetched_at") @db.Timestamptz(6)
+  provider    Provider @relation(fields: [providerId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+
+  @@unique([providerId, reportDate], map: "provider_reports_provider_id_report_date_key")
+  @@map("provider_reports")
+  @@schema("analytics")
+}
+
+// -----------------------------------------------------------------------------
+// audit
+// -----------------------------------------------------------------------------
+
+model AuditLog {
+  id            BigInt   @id @default(autoincrement()) @db.BigInt
+  occurredAt    DateTime @default(now()) @map("occurred_at") @db.Timestamptz(6)
+  actorType     String   @map("actor_type") @db.VarChar(10)
+  actorUserId   String?  @map("actor_user_id") @db.Uuid
+  actorName     String?  @map("actor_name") @db.VarChar(100)
+  action        String   @db.VarChar(60)
+  resourceType  String   @map("resource_type") @db.VarChar(40)
+  resourceId    String   @map("resource_id") @db.VarChar(64)
+  before        Json?    @db.JsonB
+  after         Json?    @db.JsonB
+  correlationId String?  @map("correlation_id") @db.Uuid
+  ip            String?  @db.VarChar(45)
+
+  @@index([resourceType, resourceId, occurredAt], map: "audit_audit_log_resource_type_resource_id_occurred_at_idx")
+  @@index([actorUserId, occurredAt], map: "audit_audit_log_actor_user_id_occurred_at_idx")
+  @@map("audit_log")
+  @@schema("audit")
+}
+
+// -----------------------------------------------------------------------------
+// Migration-managed PostgreSQL constructs intentionally not fully represented in
+// Prisma Schema Language:
+// - CHECK constraints (including all financial, status, locale and ownership checks)
+// - UNIQUE NULLS NOT DISTINCT on stock_levels, cart_items, affiliate_offers external identity
+// - JSONB unique index on product_variants(product_id, axis_values)
+// - GIN/trigram indexes on product_translations.name and products.spec_values_fa
+// - constant-expression partial unique index for commission_rates single-current row
+// The migration file remains authoritative for those constructs.
