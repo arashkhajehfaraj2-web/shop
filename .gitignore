@@ -20,3 +20,4 @@ apps/api/dist/
 apps/api/src/generated/
 apps/api/.env
 .stage05.1-backup-*/
+*- Copy.env
