@@ -11,19 +11,28 @@ import { HealthService } from './health.service';
 export class HealthController {
   constructor(private readonly health: HealthService) {}
 
-  /** GET /api/v1/health — 200 if DB is up, 503 otherwise. */
   @Get()
   async check(@Res({ passthrough: true }) response: Response) {
-    const database = await this.health.checkDatabase();
+    const [database, redis] = await Promise.all([
+      this.health.checkDatabase(),
+      this.health.checkRedis(),
+    ]);
+
+    const healthy =
+      database.status === 'up' &&
+      redis.status === 'up';
 
     const body = {
-      status: database.status === 'up' ? 'ok' : 'error',
+      status: healthy ? 'ok' : 'error',
       timestamp: new Date().toISOString(),
       uptimeSeconds: Math.round(process.uptime() * 100) / 100,
-      checks: { database },
+      checks: {
+        database,
+        redis,
+      },
     };
 
-    if (database.status !== 'up') {
+    if (!healthy) {
       response.status(HttpStatus.SERVICE_UNAVAILABLE);
     }
 
