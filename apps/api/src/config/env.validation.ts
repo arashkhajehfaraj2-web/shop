@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from 'zod/v3';
 
 const envSchema = z.object({
   NODE_ENV: z
@@ -18,7 +18,19 @@ const envSchema = z.object({
     .refine((value) => value.startsWith('postgres'), {
       message: 'must be a PostgreSQL connection string',
     }),
-
+    
+    REDIS_URL: z
+  .string()
+  .url()
+  .refine(
+    (value) =>
+      value.startsWith('redis://') ||
+      value.startsWith('rediss://'),
+    {
+      message: 'must be a Redis connection string',
+    },
+  ),
+    
   CORS_ORIGIN: z.string().optional(),
 });
 
